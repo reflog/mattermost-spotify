@@ -67,7 +67,7 @@ func (p *Plugin) setConfiguration(configuration *configuration) {
 
 		panic("setConfiguration called with the existing configuration")
 	}
-	auth := spotify.NewAuthenticator("https://reflog.ngrok.io/plugins/com.kodermonkeys.spotify/callback", spotify.ScopeUserReadPrivate, spotify.ScopeUserReadEmail, spotify.ScopeUserReadPlaybackState)
+	auth := spotify.NewAuthenticator(*p.API.GetConfig().ServiceSettings.SiteURL+"/plugins/com.kodermonkeys.spotify/callback", spotify.ScopeUserReadPrivate, spotify.ScopeUserReadEmail, spotify.ScopeUserReadPlaybackState, spotify.ScopeUserModifyPlaybackState)
 
 	// if you didn't store your ID and secret key in the specified environment variables,
 	// you can set them manually here

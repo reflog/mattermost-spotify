@@ -27,6 +27,35 @@ type Plugin struct {
 	auth          *spotify.Authenticator
 }
 
+func (p *Plugin) handleSpotify(w http.ResponseWriter, r *http.Request, userId string, clientCode func(client *spotify.Client) (interface{}, error)) {
+	tData, _ := p.API.KVGet("token-" + userId)
+	if tData == nil {
+		http.Error(w, "no token for uid "+userId, http.StatusBadRequest)
+		return
+	}
+	var tok oauth2.Token
+	if err := json.Unmarshal(tData, &tok); err != nil {
+		http.Error(w, "cannot unmarshal token", http.StatusBadRequest)
+		return
+	}
+
+	client := p.auth.NewClient(&tok)
+	if m, _ := time.ParseDuration("5m30s"); time.Until(tok.Expiry) < m {
+		newToken, _ := client.Token()
+		tokS, _ := json.Marshal(newToken)
+		p.API.KVSet("token-"+userId, tokS)
+	}
+
+	ps, err := clientCode(&client)
+	if err != nil {
+		http.Error(w, "cannot perform spotify commands: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(ps)
+}
+
 // ServeHTTP demonstrates a plugin that handles HTTP requests by greeting the world.
 func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/callback") {
@@ -70,31 +99,46 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 			http.Error(w, "invalid url", http.StatusBadRequest)
 			return
 		}
-		tData, _ := p.API.KVGet("token-" + userId)
-		if tData == nil {
-			http.Error(w, "no token for uid "+userId, http.StatusBadRequest)
+		p.handleSpotify(w, r, userId, func(client *spotify.Client) (interface{}, error) { return client.PlayerState() })
+		return
+	} else if strings.HasPrefix(r.URL.Path, "/me") {
+		cookie, _ := r.Cookie("MMUSERID")
+		if cookie == nil || cookie.Value == "" {
+			http.Error(w, "invalid cookie", http.StatusBadRequest)
 			return
 		}
-		var tok oauth2.Token
-		if err := json.Unmarshal(tData, &tok); err != nil {
-			http.Error(w, "cannot unmarshal token", http.StatusBadRequest)
+		p.handleSpotify(w, r, cookie.Value, func(client *spotify.Client) (interface{}, error) { return client.PlayerState() })
+		return
+	} else if strings.HasPrefix(r.URL.Path, "/command") {
+		cookie, _ := r.Cookie("MMUSERID")
+		if cookie == nil || cookie.Value == "" {
+			http.Error(w, "invalid cookie", http.StatusBadRequest)
 			return
 		}
-
-		client := p.auth.NewClient(&tok)
-		if m, _ := time.ParseDuration("5m30s"); time.Until(tok.Expiry) < m {
-			newToken, _ := client.Token()
-			tokS, _ := json.Marshal(newToken)
-			p.API.KVSet("token-"+userId, tokS)
+		if command := r.FormValue("command"); command != "" {
+			p.handleSpotify(w, r, cookie.Value, func(client *spotify.Client) (interface{}, error) {
+				var err error
+				oldStatus, err := client.PlayerState()
+				if err != nil {
+					return nil, err
+				}
+				if command == "play/pause" {
+					if oldStatus.Playing {
+						err = client.Pause()
+					} else {
+						err = client.Play()
+					}
+				} else if command == "prev" {
+					err = client.Previous()
+				} else if command == "next" {
+					err = client.Next()
+				}
+				if err != nil {
+					return nil, err
+				}
+				return client.PlayerState()
+			})
 		}
-		ps, err := client.PlayerState()
-		if err != nil {
-			http.Error(w, "cannot get spotify status: "+err.Error()+" token "+string(tData), http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(ps)
 		return
 	}
 	http.NotFound(w, r)
